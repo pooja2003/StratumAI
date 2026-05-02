@@ -1,106 +1,84 @@
-from dotenv import load_dotenv
-from email_sender import send_intelligence_report
-import schedule
-import time
 import os
+import time as time_module
+import threading
+import schedule
+from dotenv import load_dotenv
+from supabase import create_client
 
 load_dotenv(override=True)
 
-# ─────────────────────────────────────────
-# CONFIGURE YOUR WATCHLIST HERE
-# Add or remove companies anytime
-# ─────────────────────────────────────────
-WATCHLIST = [
-    "Zepto",
-    "Razorpay",
-    "Flipkart",
-    "CRED",
-    "Salesforce"
-]
+def get_supabase():
+    return create_client(
+        os.getenv("SUPABASE_URL"),
+        os.getenv("SUPABASE_KEY")
+    )
 
-# ─────────────────────────────────────────
-# RECIPIENT EMAIL
-# ─────────────────────────────────────────
-RECIPIENT = os.getenv("GMAIL_ADDRESS")  # sends to yourself by default
-# To send to someone else:
-# RECIPIENT = "someone@gmail.com"
+def load_jobs(recipient_email: str = None) -> list:
+    try:
+        db = get_supabase()
+        query = db.table("scheduled_jobs").select("*")
 
+        if recipient_email:
+            query = query.eq("recipient", recipient_email.strip().lower())
+        
+        result = query.execute()
+        return result.data or []
+    except Exception as e:
+        print(f"Error loading jobs: {e}")
+        return []
 
-# ─────────────────────────────────────────
-# JOB — runs for every company in watchlist
-# ─────────────────────────────────────────
-def run_weekly_reports():
-    print("\n" + "="*60)
-    print(f"📅 WEEKLY STRATUMAI RUN — {time.strftime('%B %d, %Y %H:%M')}")
-    print("="*60)
-    print(f"Companies to analyze: {', '.join(WATCHLIST)}")
-    print(f"Sending reports to:   {RECIPIENT}")
-    print("="*60 + "\n")
+def save_job(job: dict) -> dict:
+    try:
+        db = get_supabase()
+        result = db.table("scheduled_jobs").insert({
+            "companies": job["companies"],
+            "recipient": job["recipient"],
+            "day":       job["day"],
+            "time_str":  job["time"]
+        }).execute()
+        return result.data[0] if result.data else {}
+    except Exception as e:
+        print(f"Error saving job: {e}")
+        return {}
 
-    success_count = 0
-    fail_count    = 0
+def delete_job(job_id: str):
+    try:
+        db = get_supabase()
+        db.table("scheduled_jobs").delete().eq("id", job_id).execute()
+        print(f"✅ Deleted job: {job_id}")
+    except Exception as e:
+        print(f"Error deleting job: {e}")
 
-    for company in WATCHLIST:
-        try:
-            print(f"\n[{WATCHLIST.index(company)+1}/{len(WATCHLIST)}] Processing: {company}")
-            send_intelligence_report(company, RECIPIENT)
-            success_count += 1
+def schedule_job(companies: list, recipient: str, day: str, time_str: str):
+    def job_fn():
+        from graph import run_stratumai
+        from email_sender import send_report_email
+        for company in companies:
+            try:
+                report = run_stratumai(company)
+                send_report_email(company, report, recipient)
+                time_module.sleep(10)
+            except Exception as e:
+                print(f"Scheduler error for {company}: {e}")
 
-            # Wait 10 seconds between companies
-            # so we don't hit API rate limits
-            if company != WATCHLIST[-1]:
-                print(f"  ⏳ Waiting 10s before next company...")
-                time.sleep(10)
+    getattr(schedule.every(), day.lower()).at(time_str).do(job_fn)
+    print(f"✅ Scheduled: {companies} every {day} at {time_str}")
 
-        except Exception as e:
-            print(f"  ❌ Failed for {company}: {str(e)}")
-            fail_count += 1
-            continue
-
-    print("\n" + "="*60)
-    print(f"✅ Run complete — {success_count} sent, {fail_count} failed")
-    print(f"⏰ Next run: {schedule.next_run()}")
-    print("="*60 + "\n")
-
-
-# ─────────────────────────────────────────
-# SCHEDULE
-# ─────────────────────────────────────────
 def start_scheduler():
-    print("\n🧠 StratumAI Scheduler Started")
-    print(f"📋 Watchlist: {', '.join(WATCHLIST)}")
-    print(f"📧 Recipient: {RECIPIENT}")
-    print(f"⏰ Schedule:  Every Monday at 09:00 AM")
-    print("\nPress Ctrl+C to stop.\n")
+    def run():
+        while True:
+            schedule.run_pending()
+            time_module.sleep(30)
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
 
-    # Run every Monday at 9am
-    schedule.every().monday.at("09:00").do(run_weekly_reports)
+# On import: reload all persisted jobs from Supabase
+for job in load_jobs():
+    schedule_job(
+        job["companies"],
+        job["recipient"],
+        job["day"],
+        job["time_str"]
+    )
 
-    # Shows when the next run is
-    print(f"⏳ Next scheduled run: {schedule.next_run()}\n")
-
-    # Keep the script alive, checking every minute
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-
-# ─────────────────────────────────────────
-# RUN OPTIONS
-# ─────────────────────────────────────────
-if __name__ == "__main__":
-    print("\n🧠 StratumAI Scheduler")
-    print("─" * 40)
-    print("1. Start weekly scheduler (runs every Monday 9am)")
-    print("2. Run reports RIGHT NOW (test mode)")
-    print("─" * 40)
-
-    choice = input("Enter choice (1 or 2): ").strip()
-
-    if choice == "1":
-        start_scheduler()
-    elif choice == "2":
-        print("\n🚀 Running all reports now in test mode...\n")
-        run_weekly_reports()
-    else:
-        print("Invalid choice. Please enter 1 or 2.")
+start_scheduler()

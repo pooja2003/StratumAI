@@ -6,41 +6,44 @@ from typing import TypedDict
 from research_agent import run_research_agent
 from sentiment_agent import run_sentiment_agent
 from financial_agent import run_financial_agent
+import concurrent.futures
 import os
 
 load_dotenv(override=True)
 
-# ─────────────────────────────────────────
-# SHARED STATE
-# This is the "shared notepad" all agents
-# read from and write to
-# ─────────────────────────────────────────
+
 class StratumAIState(TypedDict):
-    company_name: str
-    research_findings: str
+    company_name:       str
+    research_findings:  str
     sentiment_findings: str
     financial_findings: str
-    final_report: str
+    final_report:       str
 
 
 # ─────────────────────────────────────────
-# AGENT NODES
-# Each function is one node in the graph
+# PARALLEL EXECUTION NODE
+# Runs all 3 agents at the same time
 # ─────────────────────────────────────────
-def research_node(state: StratumAIState) -> StratumAIState:
-    print("🔍 Research Agent running...")
-    findings = run_research_agent(state["company_name"])
-    return {"research_findings": findings}
+def parallel_research_node(state: StratumAIState) -> StratumAIState:
+    company = state["company_name"]
+    print(f"🚀 Running 3 agents in parallel for: {company}")
 
-def sentiment_node(state: StratumAIState) -> StratumAIState:
-    print("💬 Sentiment Agent running...")
-    findings = run_sentiment_agent(state["company_name"])
-    return {"sentiment_findings": findings}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_research  = executor.submit(run_research_agent,  company)
+        future_sentiment = executor.submit(run_sentiment_agent, company)
+        future_financial = executor.submit(run_financial_agent, company)
 
-def financial_node(state: StratumAIState) -> StratumAIState:
-    print("💰 Financial Agent running...")
-    findings = run_financial_agent(state["company_name"])
-    return {"financial_findings": findings}
+        research_findings  = future_research.result()
+        sentiment_findings = future_sentiment.result()
+        financial_findings = future_financial.result()
+
+    print("✅ All 3 agents done")
+    return {
+        "research_findings":  research_findings,
+        "sentiment_findings": sentiment_findings,
+        "financial_findings": financial_findings,
+    }
+
 
 def writer_node(state: StratumAIState) -> StratumAIState:
     print("✍️  Writer Agent running...")
@@ -52,7 +55,7 @@ def writer_node(state: StratumAIState) -> StratumAIState:
     )
 
     prompt = f"""You are a senior business analyst with over decades of experience.
-    
+
 You have received intelligence reports from three specialized agents
 about the company: {state["company_name"]}
 
@@ -65,10 +68,9 @@ about the company: {state["company_name"]}
 --- FINANCIAL FINDINGS ---
 {state["financial_findings"]}
 
-Now write a professional Competitive Intelligence Brief with these
-exact sections:
+Write a professional Competitive Intelligence Brief with these sections:
 
-# {state["company_name"]} — Intelligence Brief
+# {state["company_name"]} - Intelligence Brief
 
 ## 1. Executive Summary
 (3-4 sentences summarizing the most important things to know)
@@ -79,11 +81,11 @@ exact sections:
 ## 3. Market Sentiment
 (What customers, employees and the public think)
 
-## 4. Financial & Growth Signals
+## 4. Financial and Growth Signals
 (Funding, hiring trends, revenue signals)
 
 ## 5. Strategic Implications
-(What this all means — where is this company headed?)
+(What this all means - where is this company headed?)
 
 ## 6. Watch List
 (3 specific things to monitor about this company in the next 90 days)
@@ -95,45 +97,30 @@ Be concise, specific, and use bullet points inside each section."""
 
 
 # ─────────────────────────────────────────
-# BUILD THE GRAPH
+# BUILD GRAPH
 # ─────────────────────────────────────────
 def build_graph():
     graph = StateGraph(StratumAIState)
 
-    # Add all four nodes
-    graph.add_node("research", research_node)
-    graph.add_node("sentiment", sentiment_node)
-    graph.add_node("financial", financial_node)
-    graph.add_node("writer", writer_node)
+    graph.add_node("parallel_research", parallel_research_node)
+    graph.add_node("writer",            writer_node)
 
-    # All three agents start at the same time (parallel execution)
-    graph.add_edge(START, "research")
-    graph.add_edge(START, "sentiment")
-    graph.add_edge(START, "financial")
-
-    # All three feed into the writer when done
-    graph.add_edge("research", "writer")
-    graph.add_edge("sentiment", "writer")
-    graph.add_edge("financial", "writer")
-
-    # Writer produces the final output
-    graph.add_edge("writer", END)
+    graph.add_edge(START,               "parallel_research")
+    graph.add_edge("parallel_research", "writer")
+    graph.add_edge("writer",            END)
 
     return graph.compile()
 
 
-# ─────────────────────────────────────────
-# RUN
-# ─────────────────────────────────────────
 def run_stratumai(company_name: str) -> str:
     graph = build_graph()
 
     initial_state = {
-        "company_name": company_name,
-        "research_findings": "",
+        "company_name":       company_name,
+        "research_findings":  "",
         "sentiment_findings": "",
         "financial_findings": "",
-        "final_report": ""
+        "final_report":       ""
     }
 
     print(f"\n🚀 StratumAI starting analysis for: {company_name}\n")
@@ -143,7 +130,7 @@ def run_stratumai(company_name: str) -> str:
 
 if __name__ == "__main__":
     company = input("Enter company name: ")
-    report = run_stratumai(company)
+    report  = run_stratumai(company)
     print("\n" + "="*60)
     print("FINAL INTELLIGENCE BRIEF")
     print("="*60 + "\n")

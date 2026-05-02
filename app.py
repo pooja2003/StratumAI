@@ -2,27 +2,16 @@ import streamlit as st
 import streamlit.components.v1 as components
 from graph import run_stratumai
 from email_sender import send_report_email, generate_pdf
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.colors import HexColor
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
-from reportlab.lib.units import mm
-from io import BytesIO
+from upstash_redis import Redis
 import threading
 import schedule
 import time
 from datetime import time as dt_time
 import re
 import os
-import hashlib
-from datetime import datetime, timedelta
-
-@st.cache_data(ttl=21600)  # 6 hours
-def cached_stratumai(company):
-    return run_stratumai(company)
 
 # ─────────────────────────────────────────
-# PAGE CONFIGURATION
+# PAGE CONFIGURATION — must be first
 # ─────────────────────────────────────────
 st.set_page_config(
     page_title="StratumAI",
@@ -30,6 +19,48 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+# ─────────────────────────────────────────
+# REDIS CACHE
+# ─────────────────────────────────────────
+def get_redis():
+    return Redis(
+        url=os.getenv("UPSTASH_REDIS_REST_URL"),
+        token=os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    )
+
+def cached_stratumai(company: str) -> str:
+    key = f"report:{company.strip().lower()}"
+
+    try:
+        redis = get_redis()
+        cached = redis.get(key)
+        if cached:
+            print(f"✅ Cache hit for: {company}")
+            return cached
+    except Exception as e:
+        print(f"Redis read error: {e}")
+
+    print(f"🔍 Cache miss — running agents for: {company}")
+    report = run_stratumai(company)   # ← correct, calls graph
+
+    try:
+        redis = get_redis()
+        redis.set(key, report, ex=21600)  # 6 hour expiry
+    except Exception as e:
+        print(f"Redis write error: {e}")
+
+    return report
+
+
+# ─────────────────────────────────────────
+# SESSION STATE INIT
+# ─────────────────────────────────────────
+if "scheduled_jobs" not in st.session_state:
+    st.session_state["scheduled_jobs"] = []
+if "last_loaded_email" not in st.session_state:
+    st.session_state["last_loaded_email"] = ""
+
 
 # ─────────────────────────────────────────
 # CSS
@@ -79,6 +110,9 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.05) !important;
         box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
         padding: 20px;
+    }
+    div[data-testid="InputInstructions"] {
+        display: none !important;
     }
     button[kind="primary"] {
         background: linear-gradient(90deg, #4FACFE 0%, #00F2FE 100%);
@@ -131,22 +165,16 @@ st.markdown("""
 
 # ─────────────────────────────────────────
 # SCHEDULER BACKGROUND THREAD
-# Runs schedule jobs without blocking UI
 # ─────────────────────────────────────────
 def run_scheduler_thread():
     while True:
         schedule.run_pending()
         time.sleep(60)
 
-# Start background scheduler thread once
 if "scheduler_thread_started" not in st.session_state:
     t = threading.Thread(target=run_scheduler_thread, daemon=True)
     t.start()
     st.session_state["scheduler_thread_started"] = True
-
-# Track scheduled jobs in session state
-if "scheduled_jobs" not in st.session_state:
-    st.session_state["scheduled_jobs"] = []
 
 
 # ─────────────────────────────────────────
@@ -156,9 +184,6 @@ st.markdown("<div class='hero-title'>StratumAI</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-subtitle'>Multi-Agent Competitive Intelligence System</div>",
             unsafe_allow_html=True)
 
-# ─────────────────────────────────────────
-# TABS — Analysis | Scheduler
-# ─────────────────────────────────────────
 tab1, tab2 = st.tabs(["🔍 Analyze Company", "📅 Weekly Scheduler"])
 
 
@@ -170,7 +195,6 @@ with tab1:
 
     with main_col:
         with st.container(border=True):
-
             with st.form(key="search_form", clear_on_submit=False):
                 col_input, col_btn = st.columns([6.5, 3.5])
                 with col_input:
@@ -198,10 +222,11 @@ with tab1:
             if q5.button("Salesforce", use_container_width=True): st.session_state["quick"] = "Salesforce"
 
     # Resolve company
-    quick_company = st.session_state.get("quick", None)
-    final_company = quick_company if quick_company else company_name
-    existing_report = st.session_state.get("report")
+    quick_company    = st.session_state.get("quick", None)
+    final_company    = quick_company if quick_company else company_name
+    existing_report  = st.session_state.get("report")
     existing_company = st.session_state.get("final_company")
+
     if "quick" in st.session_state:
         del st.session_state["quick"]
 
@@ -210,21 +235,6 @@ with tab1:
         if not final_company.strip():
             st.error("⚠️ Target designation required.")
         else:
-            # Autoscroll
-            # st.html("""
-            #     <script>
-            #         function scrollToAnchor() {
-            #             // Use document directly instead of window.parent.document
-            #             var anchor = document.getElementById('intercept-anchor');
-            #             if (anchor) {
-            #                 anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            #             } else {
-            #                 setTimeout(scrollToAnchor, 200);
-            #             }
-            #         }
-            #         setTimeout(scrollToAnchor, 300);
-            #     </script>
-            # """)
             components.html("""
                 <script>
                     function scrollToAnchor() {
@@ -255,54 +265,57 @@ with tab1:
                 success = False
 
                 if analyze_button or quick_company:
-                    with st.spinner("Neural network processing..."):
-                        try:
-                            start_time = time.time()
-                            report = cached_stratumai(final_company)
+                    progress_bar = st.progress(0, text="Initializing agents...")
+                    status_box   = st.empty()
 
-                            st.session_state["report"] = report
-                            st.session_state["final_company"] = final_company
-                            time_taken = round(time.time() - start_time, 2)
+                    try:
+                        start_time = time.time()
 
-                            research_status.update( label="🔍 Research Agent [OK]",  state="complete")
-                            sentiment_status.update(label="💬 Sentiment Agent [OK]", state="complete")
-                            financial_status.update(label="💰 Financial Agent [OK]", state="complete")
-                            writer_status.update(   label="✍️ Writer Agent [OK]",    state="complete")
+                        progress_bar.progress(10, text="🔍 Research Agent scanning the web...")
+                        status_box.info("Searching for latest news and developments...")
 
-                            success = True
-                        except Exception as e:
-                            research_status.update( label="🔍 Research Agent [ERR]",  state="error")
-                            sentiment_status.update(label="💬 Sentiment Agent [ERR]", state="error")
-                            financial_status.update(label="💰 Financial Agent [ERR]", state="error")
-                            writer_status.update(   label="✍️ Writer Agent [ERR]",    state="error")
-                            st.error(f"System Failure: {str(e)}")
+                        progress_bar.progress(30, text="🚀 All 3 agents running in parallel...")
+                        status_box.info("Research, Sentiment and Financial agents working simultaneously...")
+
+                        report     = cached_stratumai(final_company)
+                        time_taken = round(time.time() - start_time, 2)
+
+                        st.session_state["report"]        = report
+                        st.session_state["final_company"] = final_company
+
+                        progress_bar.progress(85, text="✍️ Writer Agent synthesizing report...")
+                        status_box.info("Combining all findings into intelligence brief...")
+                        time.sleep(0.5)
+
+                        progress_bar.progress(100, text="✅ Analysis complete!")
+                        status_box.empty()
+
+                        research_status.update( label="🔍 Research Agent [OK]",  state="complete")
+                        sentiment_status.update(label="💬 Sentiment Agent [OK]", state="complete")
+                        financial_status.update(label="💰 Financial Agent [OK]", state="complete")
+                        writer_status.update(   label="✍️ Writer Agent [OK]",    state="complete")
+
+                        success = True
+
+                    except Exception as e:
+                        progress_bar.empty()
+                        status_box.empty()
+                        research_status.update( label="🔍 Research Agent [ERR]",  state="error")
+                        sentiment_status.update(label="💬 Sentiment Agent [ERR]", state="error")
+                        financial_status.update(label="💰 Financial Agent [ERR]", state="error")
+                        writer_status.update(   label="✍️ Writer Agent [ERR]",    state="error")
+                        st.error(f"System Failure: {str(e)}")
+
                 else:
-                    report = existing_report
+                    # Cached session — restore previous result
+                    report        = existing_report
                     final_company = existing_company
-                    success = True
-                    time_taken = 0
-
-                # with st.spinner("Neural network processing..."):
-                #     try:
-                #         start_time = time.time()
-                #         report     = run_stratumai(final_company)
-                #         st.session_state["report"]         = report
-                #         st.session_state["final_company"]  = final_company 
-                #         success = True
-                #         time_taken = round(time.time() - start_time, 2)
-
-                #         research_status.update( label="🔍 Research Agent [OK]",  state="complete")
-                #         sentiment_status.update(label="💬 Sentiment Agent [OK]", state="complete")
-                #         financial_status.update(label="💰 Financial Agent [OK]", state="complete")
-                #         writer_status.update(   label="✍️ Writer Agent [OK]",    state="complete")
-                #         success = True
-
-                #     except Exception as e:
-                #         research_status.update( label="🔍 Research Agent [ERR]",  state="error")
-                #         sentiment_status.update(label="💬 Sentiment Agent [ERR]", state="error")
-                #         financial_status.update(label="💰 Financial Agent [ERR]", state="error")
-                #         writer_status.update(   label="✍️ Writer Agent [ERR]",    state="error")
-                #         st.error(f"System Failure: {str(e)}")
+                    time_taken    = 0
+                    success       = True
+                    research_status.update( label="🔍 Research Agent [OK]",  state="complete")
+                    sentiment_status.update(label="💬 Sentiment Agent [OK]", state="complete")
+                    financial_status.update(label="💰 Financial Agent [OK]", state="complete")
+                    writer_status.update(   label="✍️ Writer Agent [OK]",    state="complete")
 
             # ── RESULTS ──
             if success:
@@ -324,7 +337,6 @@ with tab1:
                     st.markdown("<div class='section-sub'>Download the report or email it directly to yourself</div>",
                                 unsafe_allow_html=True)
 
-                    # Row 1 — Downloads
                     st.download_button(
                         label="📥 Download as PDF",
                         data=generate_pdf(final_company, report),
@@ -333,9 +345,9 @@ with tab1:
                         use_container_width=True,
                         type="primary"
                     )
+
                     st.markdown("<br>", unsafe_allow_html=True)
 
-                    # Row 2 — Email to myself
                     with st.container(border=True):
                         st.markdown("**📧 Email this report to yourself**")
                         st.caption("Enter your email and hit Send — you'll receive the full report with PDF attached")
@@ -356,8 +368,8 @@ with tab1:
                                 )
 
                         if send_btn:
-                            saved_report   = st.session_state.get("report")
-                            saved_company  = st.session_state.get("final_company")
+                            saved_report  = st.session_state.get("report")
+                            saved_company = st.session_state.get("final_company")
 
                             if not recipient_email.strip():
                                 st.error("Please enter your email address.")
@@ -370,7 +382,7 @@ with tab1:
                                     try:
                                         send_report_email(saved_company, saved_report, recipient_email)
                                         st.success(f"✅ Report sent to {recipient_email}!")
-                                        st.toast("📧 Email sent successfully!")
+                                        # st.toast("📧 Email sent successfully!")
                                     except Exception as e:
                                         st.error(f"Failed to send: {str(e)}")
                                         st.exception(e)
@@ -385,11 +397,63 @@ with tab2:
     with sched_col:
         st.markdown("<br>", unsafe_allow_html=True)
 
+        # ── Email identifier ──
+        with st.container(border=True):
+            st.markdown("<div class='section-header'>👤 Your Email</div>",
+                        unsafe_allow_html=True)
+            st.markdown("<div class='section-sub'>Enter your email to see and manage your personal schedules</div>",
+                        unsafe_allow_html=True)
+
+            with st.form(key="email_identifier_form"):
+                email_col, btn_col = st.columns([3, 1])
+                with email_col:
+                    user_email = st.text_input(
+                        "Your email",
+                        placeholder="your@email.com",
+                        label_visibility="collapsed"
+                    )
+                with btn_col:
+                    load_btn = st.form_submit_button(
+                        "Load My Jobs 🔄",
+                        use_container_width=True,
+                        type="primary"
+                    )
+
+        # Load this user's jobs when email is entered
+        if load_btn:
+            if not user_email or "@" not in user_email:
+                st.error("Please enter a valid email address.")
+            else:
+                with st.spinner("Fetching your scheduled jobs..."):
+                    try:
+                        from scheduler import load_jobs
+                        raw = load_jobs(recipient_email=user_email)
+                        st.session_state["scheduled_jobs"] = [
+                            {
+                                "id":        j.get("id", ""),
+                                "companies": j["companies"],
+                                "recipient": j["recipient"],
+                                "day":       j["day"],
+                                "time":      j["time_str"],
+                                "next_run":  "Scheduled"
+                            }
+                            for j in raw
+                        ]
+                        st.session_state["last_loaded_email"] = user_email
+                        st.success(f"✅ Loaded {len(raw)} job(s) for {user_email}")
+                    except Exception as e:
+                        st.error(f"Failed to load jobs: {str(e)}")
+
+        # Block UI if email not loaded yet
+        if not st.session_state.get("last_loaded_email"):
+            st.warning("Enter your email and click 'Load My Jobs' to access your schedules.")
+            st.stop()
+
         # ── Setup form ──
         with st.container(border=True):
             st.markdown("<div class='section-header'>⚙️ Configure Weekly Reports</div>",
                         unsafe_allow_html=True)
-            st.markdown("<div class='section-sub'>Set it once — every Monday at 9am you get a full intelligence brief in your inbox</div>",
+            st.markdown("<div class='section-sub'>Set it once — get a full intelligence brief in your inbox automatically</div>",
                         unsafe_allow_html=True)
 
             with st.form(key="scheduler_form"):
@@ -400,6 +464,7 @@ with tab2:
                 )
                 recipient_sched = st.text_input(
                     "Send weekly reports to",
+                    value=user_email,
                     placeholder="your@email.com"
                 )
                 schedule_day = st.selectbox(
@@ -411,7 +476,6 @@ with tab2:
                     "At what time",
                     value=dt_time(9, 0)
                 )
-
                 schedule_btn = st.form_submit_button(
                     "📅 Activate Weekly Scheduler",
                     use_container_width=True,
@@ -424,41 +488,25 @@ with tab2:
                 elif not recipient_sched.strip() or "@" not in recipient_sched:
                     st.error("Please enter a valid email address.")
                 else:
+                    from scheduler import save_job, schedule_job
+
                     companies_list = [c.strip() for c in companies_input.split(",") if c.strip()]
-                    time_str = f"{schedule_time.hour:02d}:{schedule_time.minute:02d}"
+                    time_str       = f"{schedule_time.hour:02d}:{schedule_time.minute:02d}"
 
-                    # Build the job function
-                    def weekly_job(companies=companies_list, recipient=recipient_sched):
-                        for company in companies:
-                            try:
-                                report = cached_stratumai(company)
-                                send_report_email(company, report, recipient)
-                                time.sleep(10)
-                            except Exception as e:
-                                print(f"Scheduler error for {company}: {e}")
-
-                    # Schedule it
-                    day_map = {
-                        "Monday":    schedule.every().monday,
-                        "Tuesday":   schedule.every().tuesday,
-                        "Wednesday": schedule.every().wednesday,
-                        "Thursday":  schedule.every().thursday,
-                        "Friday":    schedule.every().friday,
-                        "Saturday":  schedule.every().saturday,
-                        "Sunday":    schedule.every().sunday,
-                    }
-                    day_map[schedule_day].at(time_str).do(weekly_job)
-
-                    # Save to session state for display
                     job_info = {
                         "companies": companies_list,
                         "recipient": recipient_sched,
                         "day":       schedule_day,
                         "time":      time_str,
-                        "next_run":  str(schedule.next_run())
                     }
+                    saved = save_job(job_info)
+                    schedule_job(companies_list, recipient_sched, schedule_day, time_str)
+
+                    job_info["id"]       = saved.get("id", "")
+                    job_info["next_run"] = str(schedule.next_run())
+
                     st.session_state["scheduled_jobs"].append(job_info)
-                    st.success(f"✅ Scheduler activated! Reports will be sent every {schedule_day} at {time_str}")
+                    st.success(f"✅ Scheduler saved! Reports every {schedule_day} at {time_str}")
 
         # ── Active jobs display ──
         if st.session_state["scheduled_jobs"]:
@@ -474,7 +522,6 @@ with tab2:
                         info_col, del_col = st.columns([5, 1])
 
                         with info_col:
-                            # Smaller text instead of st.metric
                             st.markdown(f"""
                                 <div style='font-size:0.78rem;color:#94A3B8;line-height:2'>
                                     🏢 <b style='color:#E2E8F0'>{', '.join(job['companies'])}</b><br>
@@ -485,11 +532,11 @@ with tab2:
                             """, unsafe_allow_html=True)
 
                         with del_col:
-                            if st.button(
-                                "🗑️ Delete",
-                                key=f"del_{i}",
-                                use_container_width=True
-                            ):
+                            if st.button("🗑️ Delete", key=f"del_{i}", use_container_width=True):
+                                from scheduler import delete_job
+                                job_id = st.session_state["scheduled_jobs"][i].get("id")
+                                if job_id:
+                                    delete_job(job_id)
                                 st.session_state["scheduled_jobs"].pop(i)
                                 st.rerun()
 
@@ -509,7 +556,7 @@ with tab2:
         with st.container(border=True):
             st.markdown("<div class='section-header'>🚀 Send All Reports Right Now</div>",
                         unsafe_allow_html=True)
-            st.markdown("<div class='section-sub'>Don't wait for Monday — trigger all scheduled reports instantly</div>",
+            st.markdown("<div class='section-sub'>Don't wait — trigger all your scheduled reports instantly</div>",
                         unsafe_allow_html=True)
 
             send_now_btn = st.button(
@@ -535,4 +582,4 @@ with tab2:
 # FOOTER
 # ─────────────────────────────────────────
 st.divider()
-st.caption("🧠StratumAI — Built with LangGraph multi-agent architecture")
+st.caption("🧠 StratumAI — Built with LangGraph multi-agent architecture")
