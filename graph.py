@@ -90,7 +90,13 @@ Write a professional Competitive Intelligence Brief with these sections:
 ## 6. Watch List
 (3 specific things to monitor about this company in the next 90 days)
 
-Be concise, specific, and use bullet points inside each section."""
+Be concise, specific, and use bullet points inside each section.
+
+FORMATTING STRICT RULES:
+- Use ONLY "# " for the main title and "## " for sections.
+- Do NOT use "### " or any deeper heading levels.
+- Do NOT generate markdown tables. Present all data using bullet points instead.
+- Use **bold** for emphasis, but do not use italics."""
 
     response = llm.invoke([HumanMessage(content=prompt)])
     return {"final_report": response.content}

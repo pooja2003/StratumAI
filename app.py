@@ -200,7 +200,7 @@ with tab1:
                 with col_input:
                     company_name = st.text_input(
                         "Company",
-                        placeholder="Enter target (e.g., Zepto, Salesforce)...",
+                        placeholder="Enter company name (e.g., Zepto, Salesforce)",
                         label_visibility="collapsed"
                     )
                 with col_btn:
@@ -211,7 +211,7 @@ with tab1:
                     )
 
             st.markdown(
-                "<center><small style='color:#64748B;'>POPULAR TARGETS</small></center><br>",
+                "<center><small style='color:#64748B;'>POPULAR COMPANIES</small></center><br>",
                 unsafe_allow_html=True
             )
             q1, q2, q3, q4, q5 = st.columns(5)
@@ -222,13 +222,19 @@ with tab1:
             if q5.button("Salesforce", use_container_width=True): st.session_state["quick"] = "Salesforce"
 
     # Resolve company
-    quick_company    = st.session_state.get("quick", None)
-    final_company    = quick_company if quick_company else company_name
-    existing_report  = st.session_state.get("report")
-    existing_company = st.session_state.get("final_company")
+    quick_company = st.session_state.get("quick", None)
 
-    if "quick" in st.session_state:
-        del st.session_state["quick"]
+    # If quick button was clicked, persist it
+    if quick_company:
+        st.session_state["final_company"] = quick_company
+
+    # If user typed company
+    elif company_name:
+        st.session_state["final_company"] = company_name
+
+    final_company = st.session_state.get("final_company", "")
+    existing_report = st.session_state.get("report")
+    existing_company = st.session_state.get("final_company")
 
     # ── AGENT EXECUTION ──
     if analyze_button or quick_company or (existing_report and final_company == existing_company):
@@ -424,6 +430,20 @@ with tab2:
             if not user_email or "@" not in user_email:
                 st.error("Please enter a valid email address.")
             else:
+                components.html("""
+                    <script>
+                        function scrollToAnchor() {
+                            var anchor = window.parent.document.getElementById('scheduler-anchor');
+                            if (anchor) {
+                                anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            } else {
+                                setTimeout(scrollToAnchor, 100);
+                            }
+                        }
+                        scrollToAnchor();
+                    </script>
+                """, height=0)
+
                 with st.spinner("Fetching your scheduled jobs..."):
                     try:
                         from scheduler import load_jobs
@@ -448,6 +468,9 @@ with tab2:
         if not st.session_state.get("last_loaded_email"):
             st.warning("Enter your email and click 'Load My Jobs' to access your schedules.")
             st.stop()
+        
+        # 3. Create the anchor for autoscroll
+        st.markdown("<div id='scheduler-anchor'></div>", unsafe_allow_html=True)
 
         # ── Setup form ──
         with st.container(border=True):

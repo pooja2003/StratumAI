@@ -88,21 +88,35 @@ def generate_pdf(company_name: str, report: str) -> bytes:
 # ─────────────────────────────────────────
 def build_html_email(company_name: str, report: str) -> str:
     html_lines = []
+    in_list = False  # Track if we are currently building a list
+
     for line in report.split("\n"):
         line = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
 
-        if line.startswith("# "):
-            html_lines.append(f"<h1 style='color:#0A0A0F;border-bottom:2px solid #4FACFE;padding-bottom:3px'>{line[2:]}</h1>")
-        elif line.startswith("## "):
-            html_lines.append(f"<h2 style='color:#1a1a2e;margin-top:24px'>{line[3:]}</h2>")
-        elif line.startswith("- ") or line.startswith("* "):
-            html_lines.append(f"<li style='margin:2px 0;color:#333'>{line[2:]}</li>")
-        elif line.strip() == "":
-            html_lines.append("<br>")
+        # Handle Lists
+        if line.startswith("- ") or line.startswith("* "):
+            if not in_list:
+                html_lines.append("<ul style='padding-left: 20px; margin: 0;'>")
+                in_list = True
+            html_lines.append(f"<li style='margin: 4px 0; color:#333; line-height: 1.4;'>{line[2:]}</li>")
         else:
-            html_lines.append(f"<p style='color:#333;line-height:1.6'>{line}</p>")
-
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+            
+            # Handle Headers and Paragraphs
+            if line.startswith("# "):
+                html_lines.append(f"<h1 style='color:#0A0A0F; border-bottom:2px solid #4FACFE; padding-bottom:3px; margin: 20px 0 10px 0;'>{line[2:]}</h1>")
+            elif line.startswith("## "):
+                html_lines.append(f"<h2 style='color:#1a1a2e; margin: 15px 0 5px 0;'>{line[3:]}</h2>")
+            elif line.strip() == "":
+                continue # Skip empty lines instead of adding <br>
+            else:
+                html_lines.append(f"<p style='color:#333; line-height: 1.5; margin: 5px 0;'>{line}</p>")
+    
+    if in_list: html_lines.append("</ul>")
+    
     body_html = "\n".join(html_lines)
 
     return f"""
