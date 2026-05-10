@@ -2,6 +2,8 @@ import os
 import time as time_module
 import threading
 import schedule
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 from supabase import create_client
 
@@ -12,6 +14,19 @@ def get_supabase():
         os.getenv("SUPABASE_URL"),
         os.getenv("SUPABASE_KEY")
     )
+
+def convert_ist_to_utc(time_str: str) -> str:
+    """Convert HH:MM IST to HH:MM UTC for the schedule library"""
+    ist = pytz.timezone("Asia/Kolkata")
+    utc = pytz.utc
+
+    # Build a datetime with today's date and the given IST time
+    hour, minute = map(int, time_str.split(":"))
+    now_ist = datetime.now(ist).replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    # Convert to UTC
+    now_utc = now_ist.astimezone(utc)
+    return now_utc.strftime("%H:%M")
 
 def load_jobs(recipient_email: str = None) -> list:
     try:
@@ -50,6 +65,9 @@ def delete_job(job_id: str):
         print(f"Error deleting job: {e}")
 
 def schedule_job(companies: list, recipient: str, day: str, time_str: str):
+    utc_time = convert_ist_to_utc(time_str)
+    print(f"⏰ IST {time_str} → UTC {utc_time}")
+
     def job_fn():
         from graph import run_stratumai
         from email_sender import send_report_email
@@ -61,8 +79,8 @@ def schedule_job(companies: list, recipient: str, day: str, time_str: str):
             except Exception as e:
                 print(f"Scheduler error for {company}: {e}")
 
-    getattr(schedule.every(), day.lower()).at(time_str).do(job_fn)
-    print(f"✅ Scheduled: {companies} every {day} at {time_str}")
+    getattr(schedule.every(), day.lower()).at(utc_time).do(job_fn)
+    print(f"✅ Scheduled: {companies} every {day} at {utc_time}")
 
 def start_scheduler():
     def run():
