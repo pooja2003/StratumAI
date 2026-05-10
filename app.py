@@ -496,7 +496,7 @@ with tab2:
                      "Thursday", "Friday", "Saturday", "Sunday"]
                 )
                 schedule_time = st.time_input(
-                    "At what time",
+                    "At what time (IST)",
                     value=dt_time(9, 0)
                 )
                 schedule_btn = st.form_submit_button(
@@ -549,8 +549,7 @@ with tab2:
                                 <div style='font-size:0.78rem;color:#94A3B8;line-height:2'>
                                     🏢 <b style='color:#E2E8F0'>{', '.join(job['companies'])}</b><br>
                                     📅 Every <b style='color:#E2E8F0'>{job['day']}</b> at <b style='color:#E2E8F0'>{job['time']}</b><br>
-                                    📧 Sending to <b style='color:#4FACFE'>{job['recipient']}</b><br>
-                                    ⏰ Next run: <span style='color:#64748B'>{job['next_run']}</span>
+                                    📧 Sending to <b style='color:#4FACFE'>{job['recipient']}</b>
                                 </div>
                             """, unsafe_allow_html=True)
 
